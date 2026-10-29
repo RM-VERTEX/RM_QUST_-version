@@ -45,6 +45,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+osThreadId VISIONHandle;
 
 /* USER CODE END Variables */
 osThreadId LEDHandle;
@@ -56,6 +57,8 @@ osThreadId ADCHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
+/* [解析] 视觉通信任务，实现在 applications/vision_task.cpp（extern "C"） */
+void vision_task(void const * argument);
 
 /* USER CODE END FunctionPrototypes */
 
@@ -152,7 +155,12 @@ void MX_FREERTOS_Init(void) {
   ADCHandle = osThreadCreate(osThread(ADC), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  /* [解析] 视觉通信任务：1 kHz 上报 + 接收指令。
+     [解析] 优先级 Normal：低于 DBUS/CHASSIS，高于 IMU/LED —— USB 发送只有几十微秒，不会拖慢控制。
+     [解析] 栈 256 字（1 KB）：send() 里只有几十字节的局部变量，够用。 */
+  osThreadDef(VISION, vision_task, osPriorityNormal, 0, 256);
+  VISIONHandle = osThreadCreate(osThread(VISION), NULL);
+
   /* USER CODE END RTOS_THREADS */
 
 }

@@ -103,6 +103,11 @@ int main(void)
   MX_USART3_UART_Init();
   MX_ADC3_Init();
   /* USER CODE BEGIN 2 */
+  /* [解析] ★ USB CDC 必须在这里初始化。
+     [解析] CubeMX 默认把 MX_USB_DEVICE_Init() 生成在 __weak led_task() 里，
+     [解析] 而本工程 applications/led_task.cpp 覆盖了该弱函数 → 那句调用永远不会执行，
+     [解析] 现象就是"程序在跑、但插上 USB 没有任何设备"。放在调度器启动前最稳。 */
+  MX_USB_DEVICE_Init();
 
   /* USER CODE END 2 */
 

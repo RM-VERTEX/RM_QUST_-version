@@ -15,7 +15,7 @@ MCU: **STM32F407IGH6** / UFBGA176 / 168 MHz / HSE 12 MHz（PLLM=6, PLLN=168）/ 
 | `led_task.cpp` | `htim5` | TIM5 CH1/2/3 |
 | `buzzer_task.cpp` | `htim4` CH3 | TIM4 CH3 |
 | `voltage_detect.cpp` | `hadc3` | ADC3 |
-| `vision_task.cpp` | USB CDC（`usbd_cdc_if.h`） | **本次未配置**，见第 5 节 |
+| `vision_task.cpp` | USB CDC（`usbd_cdc_if.h`） | USB_OTG_FS Device + CDC FS，见第 5 节 |
 
 ## 2. 已配置的引脚
 
@@ -63,6 +63,7 @@ MCU: **STM32F407IGH6** / UFBGA176 / 168 MHz / HSE 12 MHz（PLLM=6, PLLN=168）/ 
 | ADC | 1 | 128 | `adc_task` | voltage_detect.cpp |
 | IMU | -1 | 256 | `imu_task` | imu_task.cpp |
 | LED | -2 | 128 | `led_task` | led_task.cpp |
+| VISION | Normal | 256 | `vision_task` | vision_task.cpp |
 
 要点：
 
@@ -87,16 +88,49 @@ MCU: **STM32F407IGH6** / UFBGA176 / 168 MHz / HSE 12 MHz（PLLM=6, PLLN=168）/ 
 
 如需启用，在 CubeMX 中直接分配即可；完整 C 板引脚表见本文件第 6 节。
 
-## 5. vision_task.cpp 当前无法编译
+## 5. 视觉 USB CDC 通信（已启用）
 
-如果之后要启用视觉通信，需要先处理这几个问题：
+### 5.1 CubeMX 配置（已完成）
 
-1. **`supercap` 未定义**：`vision_task.cpp` 第 14 行引用了全局 `supercap`，
-   但 `sp_middleware/motor/super_cap/super_cap.hpp` 只定义了 `sp::SuperCap` 类，
-   工程里也没有该类型的全局对象。
-2. **文件里混入了 Markdown 代码块**：第 24-36 行是 ``` 和说明文字，不是合法 C++。
-3. **缺少 USB Device 中间件**：`vision.cpp` 依赖 `usbd_cdc_if.h`、`CDC_Transmit_FS`，
-   需要启用 USB_OTG_FS（Device Only）+ CDC 中间件，并把 USB Device 库加入 CMake。
+| 项目 | 配置 |
+|---|---|
+| Connectivity → USB_OTG_FS | Mode = **Device_Only**（PA11 = DM / PA12 = DP） |
+| Middleware → USB_DEVICE | Class For FS IP = **Communication Device Class (Virtual Port Com)** |
+| Clock | HSE 12 MHz，PLLM=6 / PLLN=168 / PLLP=2 / **PLLQ=7** → USB 48 MHz |
+| 生成结果 | `USB_DEVICE/App/{usb_device,usbd_cdc_if,usbd_desc}.c` + `USB_DEVICE/Target/usbd_conf.c` + `Middlewares/ST/STM32_USB_Device_Library/` |
+
+> 注意：CubeMX 默认把 `MX_USB_DEVICE_Init()` 生成在 `__weak led_task()` 里，而本工程
+> `applications/led_task.cpp` 覆盖了该弱函数，那句调用永远不会执行（现象是"程序在跑但插 USB 没设备"）。
+> 现在已在 `Core/Src/main.c` 的 `USER CODE BEGIN 2` 里显式调用一次，调度器启动前完成 USB 初始化。
+
+### 5.2 协议（与 `sp_vision_25/io/gimbal/gimbal.hpp` 严格对齐）
+
+| 方向 | 长度 | 字段 |
+|---|---|---|
+| 板 → 机 | **43 B** | `'S','P'` + mode + q[4](wxyz) + yaw/yaw_vel + pitch/pitch_vel + bullet_speed + bullet_count + CRC16 |
+| 机 → 板 | **29 B** | `'S','P'` + mode + yaw/yaw_vel/yaw_acc + pitch/pitch_vel/pitch_acc + CRC16 |
+
+- CRC 为 CRC-16/MCRF4XX：初值 `0xFFFF`、反射多项式 `0x8408`、**低字节在前**，覆盖末尾 2 字节之前的全部字节；
+- 两端结构体都带 `packed`，并用 `static_assert(sizeof(...) == 43 / 29)` 在编译期卡死长度；
+- mode：`0` 空闲 / `1` 自瞄 / `2` 小符 / `3` 大符（下行 `2` 才允许开火）。
+
+### 5.3 代码位置
+
+| 文件 | 作用 |
+|---|---|
+| `sp_middleware/io/vision/vision.hpp` | 协议结构体 + `sp::Vision` 类 |
+| `sp_middleware/io/vision/vision.cpp` | CRC、ISR 切帧解析、43 B 打包发送、100 ms 掉线判定 |
+| `applications/vision_task.cpp` | 1 kHz 上报姿态/弹速，`vision_cmd` 暴露下行指令 |
+| `USB_DEVICE/App/usbd_cdc_if.c` | `CDC_Receive_FS` 里调用 `vision_callback(Buf, *Len)` |
+| `Core/Src/freertos.c` | 注册 `VISION` 任务（Normal，栈 256 字） |
+
+### 5.4 验证
+
+1. 插上 USB：`dmesg | tail` 应出现 `cdc_acm ... ttyACM0: USB ACM device`；`lsusb` 可见 `0483:5740`；
+2. 不接视觉，直接读串口：`python3 -c "import serial;print(len(serial.Serial('/dev/ttyACM0',921600,timeout=0.2).read(43)))"`，应为 43，前两字节 `53 50`；
+3. 上位机跑 `./build/gimbal_test configs/standard3.yaml`，能看到四元数随板子转动变化即通。
+
+> 上行频率必须 ~1 kHz：视觉侧读线程是忙轮询，发送间隔超过几毫秒就可能被判掉线并触发 1 s 重连。
 
 ## 6. 生成代码后的步骤
 

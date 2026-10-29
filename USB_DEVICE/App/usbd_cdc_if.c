@@ -128,6 +128,9 @@ static int8_t CDC_Receive_FS(uint8_t* pbuf, uint32_t *Len);
 static int8_t CDC_TransmitCplt_FS(uint8_t *pbuf, uint32_t *Len, uint8_t epnum);
 
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_DECLARATION */
+/* [解析] 视觉协议层入口，定义在 applications/vision_task.cpp（C++ 侧 extern "C" 导出）。
+   [解析] 只做"把字节塞进解析缓冲并切帧"，绝不在中断里做控制运算。 */
+extern void vision_callback(uint8_t * buf, uint32_t len);
 
 /* USER CODE END PRIVATE_FUNCTIONS_DECLARATION */
 
@@ -261,8 +264,11 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+  /* [解析] 顺序很重要：先把接收缓冲重新挂上，再把刚收到的数据交给协议层解析。
+     [解析] 同优先级下本中断不会被打断，所以 Buf 在 vision_callback 返回前不会被覆盖。 */
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+  vision_callback(Buf, *Len);
   return (USBD_OK);
   /* USER CODE END 6 */
 }

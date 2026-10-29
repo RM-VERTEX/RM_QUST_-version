@@ -74,6 +74,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # sp_middleware/tools/crc/crc.cpp # <- 添加这一行
     # sp_middleware/tools/math_tools/math_tools.cpp # <- 添加这一行
 
+      applications/vision_task.cpp # <- USB CDC 视觉通信（1kHz 上报 + 29B 指令解析）
+    sp_middleware/io/vision/vision.cpp # <- 协议层：43B/29B 定长帧 + CRC16
+
     
     # Add user sources here
 )
