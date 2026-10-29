@@ -66,6 +66,7 @@ void uart_task(void const * argument);
 void buzzer_task(void const * argument);
 void adc_task(void const * argument);
 
+extern void MX_USB_DEVICE_Init(void);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
 /* GetIdleTaskMemory prototype (linked to static allocation support) */
@@ -165,6 +166,8 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_led_task */
 __weak void led_task(void const * argument)
 {
+  /* init code for USB_DEVICE */
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN led_task */
   /* Infinite loop */
   for(;;)
