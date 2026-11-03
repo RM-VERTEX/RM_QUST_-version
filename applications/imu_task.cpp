@@ -7,6 +7,8 @@
 #include "tools/mahony/mahony.hpp"
 
 // [解析] 安装方向修正矩阵：BMI088 绕 Z 轴转了 90° 贴板，不修正会把前倾算成右倾；新 X=-Y、新 Y=+X、新 Z=+Z（推导见 io/bmi088/readme.md）。
+
+//修改成单位矩阵，表示bmi088的原始坐标系和机器人坐标系一致
 const float r_ab[3][3] = {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
 
 // C板
