@@ -53,6 +53,7 @@ osThreadId CHASSISHandle;
 osThreadId DBUSHandle;
 osThreadId BUZZERHandle;
 osThreadId ADCHandle;
+osThreadId GIMBALHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -65,6 +66,7 @@ void chassis_task(void const * argument);
 void uart_task(void const * argument);
 void buzzer_task(void const * argument);
 void adc_task(void const * argument);
+void gimbal_task(void const * argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -149,6 +151,10 @@ void MX_FREERTOS_Init(void) {
   /* definition and creation of ADC */
   osThreadDef(ADC, adc_task, osPriorityAboveNormal, 0, 128);
   ADCHandle = osThreadCreate(osThread(ADC), NULL);
+
+  /* definition and creation of GIMBAL */
+  osThreadDef(GIMBAL, gimbal_task, osPriorityHigh, 0, 256);
+  GIMBALHandle = osThreadCreate(osThread(GIMBAL), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -262,6 +268,24 @@ __weak void adc_task(void const * argument)
     osDelay(1);
   }
   /* USER CODE END adc_task */
+}
+
+/* USER CODE BEGIN Header_gimbal_task */
+/**
+* @brief Function implementing the GIMBAL thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_gimbal_task */
+__weak void gimbal_task(void const * argument)
+{
+  /* USER CODE BEGIN gimbal_task */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END gimbal_task */
 }
 
 /* Private application code --------------------------------------------------*/

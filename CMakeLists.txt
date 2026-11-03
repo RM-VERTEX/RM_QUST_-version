@@ -52,6 +52,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     sp_middleware/tools/pid/pid.cpp # <- 速度环
     sp_middleware/tools/math_tools/math_tools.cpp # <- pid.cpp 依赖 limit_angle/limit_max
 
+ applications/gimbal_task.cpp # <- 云台最小控制链路(2×GM6020 开环电压, 摇杆直给)
+
  applications/led_task.cpp # <- 添加这一行
     sp_middleware/io/led/led.cpp # <- 添加这一行
 
