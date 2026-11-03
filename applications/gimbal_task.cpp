@@ -55,13 +55,13 @@ namespace
 /*==================== 参数（最保守一档）====================*/
 constexpr float kDt = 1e-3f;  // 控制周期，必须与 osDelay(1) 一致
 
-// [解析] 目标角速度上限：0.8 rad/s ≈ 46°/s。动作明显但慢，便于观察。
-constexpr float kMaxRate = 0.8f;
+// [解析] 目标角速度上限：1.2 rad/s ≈ 69°/s。
+constexpr float kMaxRate = 1.2f;
 
 // [解析] 速度环增益：0.8rad/s 误差 → 1.2V。刻意压低，宁可慢也不要抖。
 // [解析] ★ 分轴给：pitch 曾出现"一动就疯狂抖动"，若确诊是环路太硬，单独把 pitch 压低即可。
 constexpr float kYawRateKp = 1.5f;    // V / (rad/s)
-constexpr float kPitchRateKp = 0.8f;  // V / (rad/s)：pitch 惯量小、比 yaw 更容易振，先降一档
+constexpr float kPitchRateKp = 1.0f;  // V / (rad/s)：pitch 再软一档
 
 // [解析] 积分：默认 0（纯 P 最稳）。如果确诊是"重力+静摩擦"的 stick-slip（卡住→滑落→再卡住），
 // [解析]   把它加到 0.5~1.0 让环路能慢慢把扭矩顶上去，就不会卡-滑了。积分限幅很小，风险可控。
@@ -71,13 +71,16 @@ constexpr float kPitchRateMaxIout = 3.0f;  // 积分输出限幅 V（只在 Ki>0
 
 // [解析] 电压硬限幅。★ 分轴：pitch 一旦失控最容易撞限位，先给它一个更小的上限（3V）兜住。
 constexpr float kYawMaxVoltage = 6.0f;
-constexpr float kPitchMaxVoltage = 3.0f;
+constexpr float kPitchMaxVoltage = 4.0f;  // 速度保守阶段先压住，确认稳定后再放宽
 
-// [解析] 误差死区：|目标-实测| 小于它就不动作，避免追着陀螺噪声跑。
-constexpr float kRateDeadzone = 0.03f;  // rad/s ≈ 1.7°/s
+// [解析] 误差死区：|目标-实测| 小于它就不动作。
+// [解析] ★ 这是"轻碰就高频抖"的**第一个旋钮**：死区必须明显大于陀螺噪声（BMI088 静止噪声约 0.02~0.05 rad/s），
+// [解析]   否则静止时误差在噪声里反复穿越 0，环路一直点电机 → 高频颤。
+constexpr float kRateDeadzone = 0.15f;  // rad/s ≈ 8.6°/s
 
-// [解析] 反馈一阶低通：alpha 越大越平滑、相位滞后越大。0.7 ≈ 3ms 时间常数（1kHz 下）。
-constexpr float kRateAlpha = 0.7f;
+// [解析] 反馈一阶低通：alpha 越大越平滑、相位滞后越大。
+// [解析] ★ 这是第二个旋钮：0.85 ≈ 6.3ms 时间常数，把陀螺噪声压掉一大截（代价是响应变钝一点）。
+constexpr float kRateAlpha = 0.85f;
 
 // [解析] 积分分离阈值（单位：伏特，比较 |P 项输出|）。只对 Ki>0 的轴起作用。
 constexpr float kIntegralPause = 1.5f;
@@ -115,8 +118,9 @@ constexpr uint32_t kProbeOnMs = 2500;  // 探针每段 2.5s
 // [解析] 保留旧名字做兼容（全局翻转会对两轴同时生效，排查时用）。
 constexpr bool kRateLoopInvert = false;
 
-// [解析] 跑飞保护：实测角速度超过这个值（远大于指令上限）并持续 200ms → 断电锁定，摇杆回中恢复。
-constexpr float kRateLimitTrip = 2.5f;  // rad/s ≈ 143°/s
+// [解析] 跑飞保护：实测角速度超过这个值并持续 200ms → 断电锁定，摇杆回中恢复。
+// [解析] ★ 阈值必须显著大于 kMaxRate，否则正常快速转动会被误判成跑飞。
+constexpr float kRateLimitTrip = 4.0f;  // rad/s ≈ 229°/s（kMaxRate=1.2 的 3.3 倍）
 constexpr uint32_t kRateTripMs = 200;
 
 // [解析] 陀螺 vyaw 含 1/cos(pitch)，接近万向锁会发散；进环前先限到物理合理范围。
