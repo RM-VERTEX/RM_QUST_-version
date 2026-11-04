@@ -10,6 +10,7 @@
 
 #include <cmath>
 
+#include "io/bmi088/bmi088.hpp"
 #include "io/can/can.hpp"
 #include "io/dbus/dbus.hpp"
 #include "motor/rm_motor/rm_motor.hpp"
@@ -17,8 +18,9 @@
 #include "tools/math_tools/math_tools.hpp"
 #include "tools/pid/pid.hpp"
 
-extern sp::DBus remote;  // 定义在 uart_task.cpp（1 kHz 解析 DBus）
-extern sp::Mahony imu;   // 定义在 imu_task.cpp（1 kHz 更新姿态与角速度）
+extern sp::DBus remote;   // 定义在 uart_task.cpp（1 kHz 解析 DBus）
+extern sp::Mahony imu;    // 定义在 imu_task.cpp（1 kHz 更新姿态与角速度）
+extern sp::BMI088 bmi088;  // 定义在 imu_task.cpp（机体角速度，已按 r_ab 转到云台系）
 
 // [解析] GM6020_V = 电压控制：指令帧 0x1FF，ID1→data[0..1]、ID2→data[2..3]，大端 int16。
 sp::RM_Motor gimbal_yaw(1, sp::RM_Motors::GM6020_V, 1.0f);
@@ -31,13 +33,16 @@ float gimbal_yaw_stick = 0.0f;     // 右摇杆水平量（已过死区）
 float gimbal_pitch_stick = 0.0f;   // 右摇杆垂直量
 float gimbal_yaw_rate_cmd = 0.0f;  // 目标角速度 rad/s
 float gimbal_pitch_rate_cmd = 0.0f;
-float gimbal_yaw_rate = 0.0f;      // 实测角速度（低通后）rad/s
+float gimbal_yaw_rate = 0.0f;      // 实测角速度（四元数投影 + 低通）rad/s
 float gimbal_pitch_rate = 0.0f;
-float gimbal_yaw_rate_raw = 0.0f;    // 实测角速度（未滤波），诊断噪声用
+float gimbal_yaw_rate_raw = 0.0f;    // 实测角速度（未滤波，四元数投影）
 float gimbal_pitch_rate_raw = 0.0f;
-float gimbal_roll_rate_raw = 0.0f;   // 探测模式用：手转 roll 轴时看它
-float gimbal_yaw_rate_err = 0.0f;    // 速度环误差（已含极性），诊断"是跟不住还是跟反了"
+float gimbal_yaw_rate_euler = 0.0f;  // 对照用：旧的欧拉角速率 imu.vyaw（万向锁时会发散，仅诊断）
+float gimbal_pitch_rate_euler = 0.0f;
+float gimbal_pitch_geom_deg = 0.0f;  // 几何 pitch 角（±180°，低头为正），用来做安全限位
+float gimbal_yaw_rate_err = 0.0f;    // 速度环误差（已含极性）
 float gimbal_pitch_rate_err = 0.0f;
+bool g_pitch_limit_tripped = false;  // pitch 超过安全角，已切断输出
 
 // [解析] ===== 定压探针的极值锁存（Live Watch 刷不过来时用这个看结果）=====
 // [解析] 每次 "+V 窗口" 内记录 pitch 转速的最大/最小值，窗口结束后**保持不动**，
@@ -123,8 +128,16 @@ constexpr bool kRateLoopInvert = false;
 constexpr float kRateLimitTrip = 4.0f;  // rad/s ≈ 229°/s（kMaxRate=1.2 的 3.3 倍）
 constexpr uint32_t kRateTripMs = 200;
 
-// [解析] 陀螺 vyaw 含 1/cos(pitch)，接近万向锁会发散；进环前先限到物理合理范围。
+// [解析] 陀螺投影没有 1/cos 发散问题，但保留一个物理上限防止异常值。
 constexpr float kRateMeasLimit = 6.0f;  // rad/s
+
+// [解析] pitch 安全限位开关（当前**关闭**，用于观察万向锁附近的原始现象）。
+// [解析]   为什么关：切断输出=电机自由，云台会翻过垂直后永久无法解除锁定（详见 gimbal_step 里的注释）。
+constexpr bool kPitchSafeLimitEnable = false;
+
+// [解析] pitch 安全限位：几何 pitch 角超过它就直接切断输出。
+// [解析]   用 pitch_geom（±180°）而不是 pitch（asin，只有 ±90°），否则过了垂直之后 asin 会"折回来"看不出超限。
+constexpr float kPitchSafeLimitDeg = 70.0f;
 
 constexpr uint16_t kTxId = 0x1FF;
 
@@ -187,6 +200,27 @@ void update_rate_filter(float yaw_raw, float pitch_raw)
   }
   g_yaw_rate_f = kRateAlpha * g_yaw_rate_f + (1.0f - kRateAlpha) * yaw_raw;
   g_pitch_rate_f = kRateAlpha * g_pitch_rate_f + (1.0f - kRateAlpha) * pitch_raw;
+}
+
+// [解析] 用四元数把**世界竖直轴**转到机体系：v_body = q* ⊗ v_world ⊗ q（q 是机体→世界的姿态四元数，wxyz）。
+// [解析] 只做这一件事，所以内联实现 —— sp::Mahony 里那个 quaternion_frame_transform_for_mahony 是 private。
+// [解析] 与中间件里同一套公式：v_out = v_in + 2·cross(q_vec, cross(q_vec, v_in) + w·v_in)。
+void world_z_to_body(const float q[4], float out[3])
+{
+  const float w = q[0];
+  const float x = -q[1];  // 取共轭：world → body
+  const float y = -q[2];
+  const float z = -q[3];
+
+  const float vx = 0.0f, vy = 0.0f, vz = 1.0f;  // 世界竖直轴
+
+  const float tx = y * vz - z * vy + w * vx;
+  const float ty = z * vx - x * vz + w * vy;
+  const float tz = x * vy - y * vx + w * vz;
+
+  out[0] = vx + 2.0f * (y * tz - z * ty);
+  out[1] = vy + 2.0f * (z * tx - x * tz);
+  out[2] = vz + 2.0f * (x * ty - y * tx);
 }
 
 // [解析] 把两台电机的 2 字节指令拼进一帧 0x1FF 并发出。
@@ -253,13 +287,55 @@ void gimbal_step()
     return;
   }
 
-  // ---- 反馈：IMU 角速度（限幅 + 低通）----
-  // [解析] vyaw 里有 1/cos(pitch)，先限幅再滤波，防止万向锁附近冲出一个巨大值。
-  const float yaw_raw = sp::limit_min_max(imu.vyaw, -kRateMeasLimit, kRateMeasLimit);
-  const float pitch_raw = sp::limit_min_max(imu.vpitch, -kRateMeasLimit, kRateMeasLimit);
+  // ---- 反馈：四元数投影求"关节角速度"（彻底避开欧拉角的万向节死锁）----
+  // [解析] ★ 为什么不能直接用 imu.vyaw / imu.vpitch：
+  // [解析]   vyaw = wy·sin(roll)/cos(pitch) + wz·cos(roll)/cos(pitch)，pitch→±90° 时 cos(pitch)→0 → 发散。
+  // [解析]   实测现象：pitch 转到垂直，yaw 电机突然猛扭、随后 yaw 失控，而 pitch 还能控 —— 正是这个式的 1/cos。
+  // [解析] ★ 正确做法：关节角速度 = 机体角速度在"该关节转轴"上的投影，任何姿态都有定义：
+  // [解析]   - yaw 关节轴 = 世界竖直轴 z；把它用四元数转到机体系得到 z_body，再与陀螺点乘；
+  // [解析]   - pitch 关节轴 = 机体系 y 轴（绕 y 转不会改变 y 自身方向），直接取 gyro[1]。
+  // [解析]   姿态水平时两者分别退化为 gyro[2]、gyro[1]，与旧的 vyaw/vpitch 同号 → 极性和增益都不用改。
+  float z_in_body[3] = {0.0f, 0.0f, 0.0f};
+  world_z_to_body(imu.q, z_in_body);
+
+  const float yaw_rate_q =
+    bmi088.gyro[0] * z_in_body[0] + bmi088.gyro[1] * z_in_body[1] + bmi088.gyro[2] * z_in_body[2];
+  const float pitch_rate_q = bmi088.gyro[1];
+
+  const float yaw_raw = sp::limit_min_max(yaw_rate_q, -kRateMeasLimit, kRateMeasLimit);
+  const float pitch_raw = sp::limit_min_max(pitch_rate_q, -kRateMeasLimit, kRateMeasLimit);
+
   gimbal_yaw_rate_raw = yaw_raw;
   gimbal_pitch_rate_raw = pitch_raw;
-  gimbal_roll_rate_raw = imu.vroll;
+  gimbal_yaw_rate_euler = imu.vyaw;    // 对照：万向锁附近它会炸，仅用于诊断
+  gimbal_pitch_rate_euler = imu.vpitch;
+  gimbal_pitch_geom_deg = imu.pitch_geom * 57.29577951f;
+
+  // ---- 安全限位（可关）：pitch 接近垂直就切断 ----
+  // [解析] ★ 2026-11-04 实测发现这个策略有缺陷：切断=0V=电机自由，云台会在重力下翻过垂直，
+  // [解析]   之后 pitch_geom 回不到解除阈值 → **永久锁定，正反转都不响应**。
+  // [解析]   所以先整体关掉（kPitchSafeLimitEnable = false），用来观察万向锁附近的原始现象。
+  // [解析]   将来要恢复，应该改成"只在朝超限方向运动时限幅"，不要切断全部扭矩。
+  if (kPitchSafeLimitEnable) {
+    const bool pitch_over = std::fabs(gimbal_pitch_geom_deg) > kPitchSafeLimitDeg;
+    if (pitch_over) {
+      g_pitch_limit_tripped = true;
+    }
+    else if (std::fabs(gimbal_pitch_geom_deg) < (kPitchSafeLimitDeg - 5.0f)) {
+      g_pitch_limit_tripped = false;  // 5° 回差，避免在边界反复切
+    }
+    if (g_pitch_limit_tripped) {
+      gimbal_yaw_rate_cmd = 0.0f;
+      gimbal_pitch_rate_cmd = 0.0f;
+      gimbal_yaw_stick = 0.0f;
+      gimbal_pitch_stick = 0.0f;
+      stop_gimbal();
+      return;
+    }
+  }
+  else {
+    g_pitch_limit_tripped = false;
+  }
 
   // [解析] 探测模式：两轴 0V，不进环路 —— 用手转云台，看三个角速度哪个跟着动。
   if (kImuProbeOnly) {
