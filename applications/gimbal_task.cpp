@@ -60,13 +60,15 @@ namespace
 /*==================== 参数（最保守一档）====================*/
 constexpr float kDt = 1e-3f;  // 控制周期，必须与 osDelay(1) 一致
 
-// [解析] 目标角速度上限：1.2 rad/s ≈ 69°/s。
-constexpr float kMaxRate = 1.2f;
+// [解析] 目标角速度上限：★ 分轴 —— yaw 可以快，pitch 机械受限且受重力影响，单独压低。
+// [解析]   2026-11-04 实测：两轴共用 4.0 rad/s 时 pitch 抖动，所以把 pitch 收回到 2.0。
+constexpr float kYawMaxRate = 4.0f;    // rad/s ≈ 229°/s（一圈 1.6s）
+constexpr float kPitchMaxRate = 1.5f;  // rad/s ≈ 86°/s（抖动未解决前先降速）
 
 // [解析] 速度环增益：0.8rad/s 误差 → 1.2V。刻意压低，宁可慢也不要抖。
 // [解析] ★ 分轴给：pitch 曾出现"一动就疯狂抖动"，若确诊是环路太硬，单独把 pitch 压低即可。
-constexpr float kYawRateKp = 1.5f;    // V / (rad/s)
-constexpr float kPitchRateKp = 1.0f;  // V / (rad/s)：pitch 再软一档
+constexpr float kYawRateKp = 3.2f;    // V / (rad/s)
+constexpr float kPitchRateKp = 1.2f;  // V / (rad/s)：降速同步降增益
 
 // [解析] 积分：默认 0（纯 P 最稳）。如果确诊是"重力+静摩擦"的 stick-slip（卡住→滑落→再卡住），
 // [解析]   把它加到 0.5~1.0 让环路能慢慢把扭矩顶上去，就不会卡-滑了。积分限幅很小，风险可控。
@@ -75,13 +77,16 @@ constexpr float kPitchRateKi = 0.0f;      // ← 重力滑落时改 0.8
 constexpr float kPitchRateMaxIout = 3.0f;  // 积分输出限幅 V（只在 Ki>0 时起作用）
 
 // [解析] 电压硬限幅。★ 分轴：pitch 一旦失控最容易撞限位，先给它一个更小的上限（3V）兜住。
-constexpr float kYawMaxVoltage = 6.0f;
-constexpr float kPitchMaxVoltage = 4.0f;  // 速度保守阶段先压住，确认稳定后再放宽
+constexpr float kYawMaxVoltage = 14.0f;
+constexpr float kPitchMaxVoltage = 6.0f;  // 降速同步降电压上限
 
 // [解析] 误差死区：|目标-实测| 小于它就不动作。
 // [解析] ★ 这是"轻碰就高频抖"的**第一个旋钮**：死区必须明显大于陀螺噪声（BMI088 静止噪声约 0.02~0.05 rad/s），
 // [解析]   否则静止时误差在噪声里反复穿越 0，环路一直点电机 → 高频颤。
-constexpr float kRateDeadzone = 0.15f;  // rad/s ≈ 8.6°/s
+// [解析] ★ 分轴死区：pitch 轴惯量小、易被噪声激励，死区给得比 yaw 大得多（0.35 ≈ 20°/s）。
+// [解析]   代价是"很慢的转动它不响应"，但换来了静止/低速时的稳定 —— 提速时必须同步加大，否则必抖。
+constexpr float kYawRateDeadzone = 0.15f;    // rad/s ≈ 8.6°/s
+constexpr float kPitchRateDeadzone = 0.40f;  // rad/s ≈ 23°/s（随目标 1.5 等比缩小）
 
 // [解析] 反馈一阶低通：alpha 越大越平滑、相位滞后越大。
 // [解析] ★ 这是第二个旋钮：0.85 ≈ 6.3ms 时间常数，把陀螺噪声压掉一大截（代价是响应变钝一点）。
@@ -125,11 +130,12 @@ constexpr bool kRateLoopInvert = false;
 
 // [解析] 跑飞保护：实测角速度超过这个值并持续 200ms → 断电锁定，摇杆回中恢复。
 // [解析] ★ 阈值必须显著大于 kMaxRate，否则正常快速转动会被误判成跑飞。
-constexpr float kRateLimitTrip = 4.0f;  // rad/s ≈ 229°/s（kMaxRate=1.2 的 3.3 倍）
+constexpr float kRateLimitTrip = 12.0f;  // rad/s ≈ 687°/s（kMaxRate=4.0 的 3 倍）
 constexpr uint32_t kRateTripMs = 200;
 
 // [解析] 陀螺投影没有 1/cos 发散问题，但保留一个物理上限防止异常值。
-constexpr float kRateMeasLimit = 6.0f;  // rad/s
+// [解析] ★ 必须 > kRateLimitTrip，否则跑飞保护的判据永远达不到（反馈先被钳住了）。
+constexpr float kRateMeasLimit = 20.0f;  // rad/s（GM6020 空载 33 rad/s，留足余量）
 
 // [解析] pitch 安全限位开关（当前**关闭**，用于观察万向锁附近的原始现象）。
 // [解析]   为什么关：切断输出=电机自由，云台会翻过垂直后永久无法解除锁定（详见 gimbal_step 里的注释）。
@@ -390,8 +396,8 @@ void gimbal_step()
   gimbal_yaw_stick = yaw_stick;
   gimbal_pitch_stick = pitch_stick;
 
-  gimbal_yaw_rate_cmd = kYawSign * yaw_stick * kMaxRate;
-  gimbal_pitch_rate_cmd = kPitchSign * pitch_stick * kMaxRate;
+  gimbal_yaw_rate_cmd = kYawSign * yaw_stick * kYawMaxRate;
+  gimbal_pitch_rate_cmd = kPitchSign * pitch_stick * kPitchMaxRate;
 
   // ---- 跑飞保护：实测转速远超指令上限 → 断定正反馈/失控 ----
   const bool overspeed = (std::fabs(g_yaw_rate_f) > kRateLimitTrip) ||
@@ -434,8 +440,8 @@ void gimbal_step()
   gimbal_pitch_rate_err = pitch_err;
 
   // [解析] 死区在这里实现（sp::PID 没有死区参数）：误差小于阈值时把它变成 0。
-  const float yaw_err_dz = (std::fabs(yaw_err) < kRateDeadzone) ? 0.0f : yaw_err;
-  const float pitch_err_dz = (std::fabs(pitch_err) < kRateDeadzone) ? 0.0f : pitch_err;
+  const float yaw_err_dz = (std::fabs(yaw_err) < kYawRateDeadzone) ? 0.0f : yaw_err;
+  const float pitch_err_dz = (std::fabs(pitch_err) < kPitchRateDeadzone) ? 0.0f : pitch_err;
 
   // [解析] 用带"积分分离"的重载：|P 项输出| 大于 kIntegralPause 时不积分，防止大误差时积分顶满。
   // [解析]   sp::PID 内部算 set-fdb，所以把 set 写成 fdb+err 来实现"误差已被处理过"的效果。
