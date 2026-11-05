@@ -2,10 +2,9 @@
 // Yaw = GM6020 ID1(0x205), Pitch = ID2(0x206)，CAN1，电压帧 0x1FF。
 // 角速度用四元数把陀螺投影到关节轴，避开欧拉角在 pitch=±90° 的 1/cos 奇异。
 
-#include "cmsis_os.h"
-
 #include <cmath>
 
+#include "cmsis_os.h"
 #include "io/bmi088/bmi088.hpp"
 #include "io/can/can.hpp"
 #include "io/dbus/dbus.hpp"
@@ -127,8 +126,8 @@ constexpr float kYawLeverDegPerS = 240.0f;
 constexpr float kPitchLeverDegPerS = 150.0f;
 
 // 操作手速控模式的灵敏度：摇杆满偏对应的角速度
-constexpr float kYawRateSense = 4.0f;    // rad/s
-constexpr float kPitchRateSense = 1.5f;  // rad/s
+constexpr float kYawRateSense = 5.0f;    // rad/s
+constexpr float kPitchRateSense = 4.0f;  // rad/s
 constexpr float kYawSign = -1.0f;
 constexpr float kPitchSign = -1.0f;
 constexpr float kYawRateFFSign = 1.0f;
@@ -413,8 +412,8 @@ void gimbal_step()
   }
 
   // 跑飞保护
-  const bool overspeed = (std::fabs(g_yaw_rate_f) > kYawRateTrip) ||
-                         (std::fabs(g_pitch_rate_f) > kPitchRateTrip);
+  const bool overspeed =
+    (std::fabs(g_yaw_rate_f) > kYawRateTrip) || (std::fabs(g_pitch_rate_f) > kPitchRateTrip);
   if (g_runaway_active) {
     if (yaw_stick == 0.0f && pitch_stick == 0.0f) {
       g_runaway_active = false;
@@ -475,8 +474,8 @@ void gimbal_step()
 
   // 记录仪
   {
-    const bool trigger = kOutputTestZero || (std::fabs(pitch_stick) > 0.15f) ||
-                         (std::fabs(yaw_stick) > 0.15f);
+    const bool trigger =
+      kOutputTestZero || (std::fabs(pitch_stick) > 0.15f) || (std::fabs(yaw_stick) > 0.15f);
     if (g_rec_reset_req) {
       g_rec_reset_req = 0;
       g_rec_state = 0;
