@@ -45,14 +45,14 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
- applications/chassis_task.cpp # <- 底盘控制链路(omni 四全向轮 + 四路 M3508)
+    # applications/chassis_task.cpp # <- 底盘链路（云台板不编译：会和云台争 CAN 接收回调）
     sp_middleware/io/can/can.cpp # <- 添加这一行
     sp_middleware/motor/rm_motor/rm_motor.cpp # <- 添加这一行
-    sp_middleware/tools/omni/omni.cpp # <- 全向轮运动学解算
+    # sp_middleware/tools/omni/omni.cpp # <- 全向轮运动学解算（底盘专用）
     sp_middleware/tools/pid/pid.cpp # <- 速度环
     sp_middleware/tools/math_tools/math_tools.cpp # <- pid.cpp 依赖 limit_angle/limit_max
 
- applications/gimbal_task.cpp # <- 云台最小控制链路(2×GM6020 开环电压, 摇杆直给)
+ applications/gimbal_task.cpp # <- 云台控制链路(位置环 + IMU 角速度环 + 前馈)
 
  applications/led_task.cpp # <- 添加这一行
     sp_middleware/io/led/led.cpp # <- 添加这一行
