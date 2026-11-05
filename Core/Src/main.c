@@ -19,9 +19,13 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "adc.h"
 #include "can.h"
+#include "dma.h"
 #include "tim.h"
+#include "usart.h"
 #include "gpio.h"
+#include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -58,7 +62,11 @@ void MX_FREERTOS_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+/* Task entry points. Declared here so the CMSIS-RTOS thread definitions in
+   freertos.c (and the peripheral callback wiring below) resolve; the
+   definitions live in applications/. */
+void buzzer_task();
+void uart_task();
 /* USER CODE END 0 */
 
 /**
@@ -90,10 +98,14 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_TIM5_Init();
   MX_CAN1_Init();
   MX_CAN2_Init();
   MX_TIM4_Init();
+  MX_ADC3_Init();
+  MX_USART3_UART_Init();
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -141,7 +153,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLM = 6;
   RCC_OscInitStruct.PLL.PLLN = 168;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 4;
+  RCC_OscInitStruct.PLL.PLLQ = 7; /* VCO 336 MHz / 7 = 48 MHz, required by USB OTG FS */
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -160,6 +172,11 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+
+  /* USB OTG FS runs off the 48 MHz clock derived from PLLQ. On the
+     STM32F405/407 there is no software mux for it (no DCKCFGR / CLK48SEL, the
+     clock is hardwired to PLLQ), so PLLQ = 7 above is the only configuration
+     needed: VCO 336 MHz / 7 = 48 MHz. */
 }
 
 /* USER CODE BEGIN 4 */
