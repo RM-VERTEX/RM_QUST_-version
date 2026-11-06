@@ -1,3 +1,33 @@
+# ── 构建产物（每台机器自己生成，绝对不要提交）──
+build/
+compile_commands.json
+*.map
+*.su
+*.d
+*.o
+*.elf
+
+# ── 本地工具缓存 ──
+.cache/
+.clangd/
+.vscode/.cache/
+
+# ── 临时/日志/备份 ──
+build_errors.txt
+*.log
+*.bak
+*.orig
+*.rej
+
+# ── 操作系统 ──
 .DS_Store
 Thumbs.db
-build/
+desktop.ini
+
+# 注意：以下文件必须保持被跟踪，否则协作者无法一条命令编译
+#   CMakeLists.txt
+#   CMakePresets.json          ← 预设（Debug/Release + Ninja + 工具链文件）
+#   cmake/                     ← 交叉编译工具链配置
+#   STM32F407xx_FLASH.ld       ← 链接脚本
+#   startup_stm32f407xx.s      ← 启动文件
+#   .vscode/                   ← 任务（编译/烧录）与调试配置

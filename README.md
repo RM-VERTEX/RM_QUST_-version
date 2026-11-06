@@ -1,5 +1,45 @@
 # 2026/10/12
 使用同济sp战队开源的电控中间件的底盘代码
+
+## 如何编译（协作者必读）
+
+### 1. 装好三样东西，并全部加入 `PATH`
+
+| 工具 | 版本 | 下载 |
+|---|---|---|
+| CMake | ≥ 3.22 | https://cmake.org/download/ |
+| Ninja | 任意 | https://github.com/ninja-build/ninja/releases |
+| arm-none-eabi-gcc | 12 及以上 | https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads |
+
+验证：三条命令都能打印版本号即可。
+
+```bat
+cmake --version
+ninja --version
+arm-none-eabi-gcc --version
+```
+
+### 2. 一条命令编译（**不需要手动配置 CMake**）
+
+```bat
+build.bat            :: 编译 Debug
+build.bat Release    :: 编译 Release
+build.bat Debug clean :: 清空重编
+```
+
+产物：`build\Debug\Qust_version.elf`
+
+**原理**：仓库里已经带了 `CMakePresets.json`（预设了 Ninja 生成器、`build/<预设>` 输出目录、`cmake/gcc-arm-none-eabi.cmake` 交叉工具链），所以 `cmake --preset Debug` 就是完整配置，不需要任何 `-D` 参数。
+
+### 3. 在 VS Code 里（推荐）
+
+打开工程 → 自动提示安装推荐插件（CMake Tools / C/C++ / Cortex-Debug）→
+
+- **Ctrl+Shift+B**：编译 + 烧录（任务已配好）
+- **F5**：启动调试（OpenOCD + Live Watch）
+
+> `build/` 是每台机器本地生成的，**已被 `.gitignore` 排除**。如果编译报错，先 `build.bat Debug clean`。
+
 ## 云台c板代码
 
 云台控制思路：
