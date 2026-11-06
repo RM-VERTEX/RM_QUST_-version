@@ -107,14 +107,20 @@ constexpr float kPitchRateMaxIout = 3.0f;
 constexpr float kYawRateFF = 1.7f;
 constexpr float kPitchRateFF = 1.7f;
 
-// 电压上限
-constexpr float kYawMaxVoltage = 14.0f;
-constexpr float kPitchMaxVoltage = 8.0f;
+// 电压上限（已按需求去除软件限幅，这里保留电机硬件上限 ±24V 作为 PID 内部限幅）
+constexpr float kYawMaxVoltage = 24.0f;
+constexpr float kPitchMaxVoltage = 24.0f;
 
 // 死区（位置环负责"不追静摩擦"，速度环几乎不给）
 constexpr float kYawRateDeadzone = 0.01f;
 constexpr float kPitchRateDeadzone = 0.01f;
-constexpr float kIntegralPause = 1.5f;
+// 积分分离阈值（比较 |P项输出|）：只在"接近稳态"时积分。
+// 阈值 = Kp × 允许积分的误差窗口：
+//   yaw   Kp=3.2 → 0.30V ≈ 0.09 rad/s
+//   pitch Kp=0.4 → 0.08V ≈ 0.20 rad/s
+// 阈值给大了的后果：减速阶段误差大但 P 输出小（Kp 小），积分会反向饱和 → 松杆后回转。
+constexpr float kYawIntegralPause = 0.30f;
+constexpr float kPitchIntegralPause = 0.08f;
 
 // 反馈低通：alpha 越大越平滑、滞后越大
 constexpr float kRateAlpha = 0.5f;
@@ -126,8 +132,13 @@ constexpr float kYawLeverDegPerS = 240.0f;
 constexpr float kPitchLeverDegPerS = 150.0f;
 
 // 操作手速控模式的灵敏度：摇杆满偏对应的角速度
-constexpr float kYawRateSense = 5.0f;    // rad/s
-constexpr float kPitchRateSense = 4.0f;  // rad/s
+constexpr float kYawRateSense = 6.0f;    // rad/s
+constexpr float kPitchRateSense = 5.0f;  // rad/s
+
+// 操作手"开环电压"模式：摇杆满偏对应的电压（V）。true = 不用 PID，摇杆直接给电压。
+constexpr bool kOperatorOpenLoop = true;
+constexpr float kYawOpenLoopV = 4.0f;
+constexpr float kPitchOpenLoopV = 3.0f;
 constexpr float kYawSign = -1.0f;
 constexpr float kPitchSign = -1.0f;
 constexpr float kYawRateFFSign = 1.0f;
@@ -137,11 +148,9 @@ constexpr float kPitchRateFFSign = 1.0f;
 constexpr float kPitchSoftMinDeg = -35.0f;
 constexpr float kPitchSoftMaxDeg = +35.0f;
 
-// 保护
+// 位置环输出（目标角速度）不再软件限幅，用电机空载极限 33 rad/s 作为数值上限
+constexpr float kRateCmdMax = 33.0f;
 constexpr uint32_t kStartupDelayMs = 1000;
-constexpr float kYawRateTrip = 10.0f;
-constexpr float kPitchRateTrip = 5.0f;
-constexpr uint32_t kRateTripMs = 200;
 constexpr float kPitchSafeLimitDeg = 70.0f;
 
 // 调试开关
@@ -158,8 +167,8 @@ constexpr uint16_t kTxId = 0x1FF;
 sp::CAN can1(&hcan1);
 sp::PID yaw_rate_pid(kDt, kYawRateKp, kYawRateKi, 0.0f, kYawMaxVoltage, 3.0f);
 sp::PID pitch_rate_pid(kDt, kPitchRateKp, kPitchRateKi, 0.0f, kPitchMaxVoltage, kPitchRateMaxIout);
-sp::PID yaw_pos_pid(kDt, kYawPosKp, 0.0f, 0.0f, kYawMaxRate, 0.0f);
-sp::PID pitch_pos_pid(kDt, kPitchPosKp, 0.0f, 0.0f, kPitchMaxRate, 0.0f);
+sp::PID yaw_pos_pid(kDt, kYawPosKp, 0.0f, 0.0f, kRateCmdMax, 0.0f);
+sp::PID pitch_pos_pid(kDt, kPitchPosKp, 0.0f, 0.0f, kRateCmdMax, 0.0f);
 
 //==================== 状态 ====================
 bool g_started = false;
@@ -173,8 +182,6 @@ uint32_t g_q_same_count = 0;
 float g_yaw_rate_f = 0.0f;
 float g_pitch_rate_f = 0.0f;
 bool g_filter_ready = false;
-bool g_runaway_active = false;
-uint32_t g_runaway_since = 0;
 uint32_t g_loop_count = 0;
 uint32_t g_hz_window_start = 0;
 
@@ -294,8 +301,6 @@ void update_mode(uint32_t now)
   yaw_pos_pid.clear();
   pitch_pos_pid.clear();
   g_angle_inited = false;
-  g_runaway_active = false;
-  g_rate_runaway = false;
 }
 
 //==================== 主循环 ====================
@@ -411,61 +416,40 @@ void gimbal_step()
     gimbal_pitch_rate_cmd = pitch_pos_pid.out;
   }
 
-  // 跑飞保护
-  const bool overspeed =
-    (std::fabs(g_yaw_rate_f) > kYawRateTrip) || (std::fabs(g_pitch_rate_f) > kPitchRateTrip);
-  if (g_runaway_active) {
-    if (yaw_stick == 0.0f && pitch_stick == 0.0f) {
-      g_runaway_active = false;
-      g_rate_runaway = false;
-    }
-  }
-  else if (overspeed) {
-    if (g_runaway_since == 0) {
-      g_runaway_since = now;
-    }
-    else if ((now - g_runaway_since) >= kRateTripMs) {
-      g_runaway_active = true;
-      g_rate_runaway = true;
-      g_runaway_since = 0;
-      stop_gimbal();
-      return;
-    }
-  }
-  else {
-    g_runaway_since = 0;
-  }
-  if (g_runaway_active) {
-    stop_gimbal();
-    return;
-  }
-
   update_rate_filter(yaw_raw, pitch_raw);
   gimbal_yaw_rate = g_yaw_rate_f;
   gimbal_pitch_rate = g_pitch_rate_f;
 
-  // 速度环
-  const float yaw_fb = (kYawRateInvert != kRateLoopInvert) ? -g_yaw_rate_f : g_yaw_rate_f;
-  const float pitch_fb = (kPitchRateInvert != kRateLoopInvert) ? -g_pitch_rate_f : g_pitch_rate_f;
+  if (g_mode == kModeOperator && kOperatorOpenLoop) {
+    // 操作手开环：摇杆 → 电压，不经过任何 PID（不会自激）
+    gimbal_yaw_out_v = kYawSign * yaw_stick * kYawOpenLoopV;
+    gimbal_pitch_out_v = kPitchSign * pitch_stick * kPitchOpenLoopV;
+    yaw_rate_pid.clear();
+    pitch_rate_pid.clear();
+  }
+  else {
+    // 速度环
+    const float yaw_fb = (kYawRateInvert != kRateLoopInvert) ? -g_yaw_rate_f : g_yaw_rate_f;
+    const float pitch_fb = (kPitchRateInvert != kRateLoopInvert) ? -g_pitch_rate_f : g_pitch_rate_f;
 
-  const float yaw_err = gimbal_yaw_rate_cmd - yaw_fb;
-  const float pitch_err = gimbal_pitch_rate_cmd - pitch_fb;
-  gimbal_yaw_rate_err = yaw_err;
-  gimbal_pitch_rate_err = pitch_err;
+    const float yaw_err = gimbal_yaw_rate_cmd - yaw_fb;
+    const float pitch_err = gimbal_pitch_rate_cmd - pitch_fb;
+    gimbal_yaw_rate_err = yaw_err;
+    gimbal_pitch_rate_err = pitch_err;
 
-  const float yaw_err_dz = (std::fabs(yaw_err) < kYawRateDeadzone) ? 0.0f : yaw_err;
-  const float pitch_err_dz = (std::fabs(pitch_err) < kPitchRateDeadzone) ? 0.0f : pitch_err;
+    const float yaw_err_dz = (std::fabs(yaw_err) < kYawRateDeadzone) ? 0.0f : yaw_err;
+    const float pitch_err_dz = (std::fabs(pitch_err) < kPitchRateDeadzone) ? 0.0f : pitch_err;
 
-  yaw_rate_pid.calc(yaw_fb + yaw_err_dz, yaw_fb, kIntegralPause);
-  pitch_rate_pid.calc(pitch_fb + pitch_err_dz, pitch_fb, kIntegralPause);
+    yaw_rate_pid.calc(yaw_fb + yaw_err_dz, yaw_fb, kYawIntegralPause);
+    pitch_rate_pid.calc(pitch_fb + pitch_err_dz, pitch_fb, kPitchIntegralPause);
 
-  // 前馈 + P/I
-  const float yaw_ff = kYawRateFF * kYawRateFFSign * gimbal_yaw_rate_cmd;
-  const float pitch_ff = kPitchRateFF * kPitchRateFFSign * gimbal_pitch_rate_cmd;
+    // 前馈 + P/I
+    const float yaw_ff = kYawRateFF * kYawRateFFSign * gimbal_yaw_rate_cmd;
+    const float pitch_ff = kPitchRateFF * kPitchRateFFSign * gimbal_pitch_rate_cmd;
 
-  gimbal_yaw_out_v = sp::limit_min_max(yaw_ff + yaw_rate_pid.out, -kYawMaxVoltage, kYawMaxVoltage);
-  gimbal_pitch_out_v =
-    sp::limit_min_max(pitch_ff + pitch_rate_pid.out, -kPitchMaxVoltage, kPitchMaxVoltage);
+    gimbal_yaw_out_v = yaw_ff + yaw_rate_pid.out;
+    gimbal_pitch_out_v = pitch_ff + pitch_rate_pid.out;
+  }
 
   if (kOutputTestZero) {
     gimbal_yaw_out_v = 0.0f;
